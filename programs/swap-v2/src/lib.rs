@@ -35,7 +35,79 @@ pub mod swap_v2 {
         amount: u64,
         amount_out_min: u64,
     ) -> Result<()> {
-        todo!()
+        // Optional referral account (earns a referral fee).
+        let srm_msrm_discount = ctx.remaining_accounts.iter().next().map(Clone::clone);
+        let orderbook: OrderbookClient<'info> = (&*ctx.accounts).into();
+
+        // Side determines swap direction.
+        let (from_token, to_token) = match side {
+            Side::Bid => (&ctx.accounts.pc_wallet, &ctx.accounts.market.coin_wallet),
+            Side::Ask => (&ctx.accounts.market.coin_wallet, &ctx.accounts.pc_wallet),
+        };
+
+        // Calculate the limit price.
+        let (
+            limit_price,
+            max_coin_qty,
+            max_native_max_native_pc_qty_including_fees,
+            min_coin_qty,
+            min_native_pc_qty,
+        ) = match side {
+            Side::Bid => {
+                let limit_price = amount_out_min / amount;
+                NonZeroU64::new(limit_price).ok_or(ErrorCode::InvalidLimitPrice)?;
+                let max_coin_qty = amount / limit_price;
+                let max_native_max_native_pc_qty_including_fees = amount;
+                let min_coin_qty = amount_out_min;
+                let min_native_pc_qty = amount_out_min * limit_price;
+                (
+                    limit_price,
+                    max_coin_qty,
+                    max_native_max_native_pc_qty_including_fees,
+                    min_coin_qty,
+                    min_native_pc_qty,
+                )
+            }
+            Side::Ask => {
+                let limit_price = amount / amount_out_min;
+                NonZeroU64::new(limit_price).ok_or(ErrorCode::InvalidLimitPrice)?;
+                let max_coin_qty = amount;
+                let max_native_max_native_pc_qty_including_fees = amount * limit_price;
+                let min_coin_qty = amount_out_min / limit_price;
+                let min_native_pc_qty = amount_out_min;
+                (
+                    limit_price,
+                    max_coin_qty,
+                    max_native_max_native_pc_qty_including_fees,
+                    min_coin_qty,
+                    min_native_pc_qty,
+                )
+            }
+        };
+
+        // Token balances before the trade.
+        let from_amount_before = token::accessor::amount(from_token)?;
+        let to_amount_before = token::accessor::amount(to_token)?;
+
+        orderbook.send_take_cpi(
+            side,
+            limit_price,
+            max_coin_qty,
+            max_native_max_native_pc_qty_including_fees,
+            min_coin_qty,
+            min_native_pc_qty,
+            srm_msrm_discount,
+        )?;
+
+        // Token balances after the trade.
+        let from_amount_after = token::accessor::amount(from_token)?;
+        let to_amount_after = token::accessor::amount(to_token)?;
+
+        //  Calculate the delta, i.e. the amount swapped.
+        let from_amount = from_amount_before.checked_sub(from_amount_after).unwrap();
+        let to_amount = to_amount_after.checked_sub(to_amount_before).unwrap();
+
+        Ok(())
     }
 
     /// Swap two base currencies across two different markets.
@@ -58,7 +130,15 @@ pub mod swap_v2 {
     ) -> Result<()> {
         todo!()
     }
+
+    pub fn test<'info>(ctx: Context<TEST>) -> Result<()> {
+        msg!("Hello, world!");
+        Ok(())
+    }
 }
+
+#[derive(Accounts)]
+pub struct TEST {}
 
 #[derive(Accounts)]
 pub struct Swap<'info> {
@@ -74,6 +154,18 @@ pub struct Swap<'info> {
     pub dex_program: AccountInfo<'info>,
     // The token program
     pub token_program: AccountInfo<'info>,
+}
+
+impl<'info> From<&Swap<'info>> for OrderbookClient<'info> {
+    fn from(accounts: &Swap<'info>) -> OrderbookClient<'info> {
+        OrderbookClient {
+            market: accounts.market.clone(),
+            wallet_owner: accounts.wallet_owner.clone(),
+            pc_wallet: accounts.pc_wallet.clone(),
+            dex_program: accounts.dex_program.clone(),
+            token_program: accounts.token_program.clone(),
+        }
+    }
 }
 
 #[derive(Accounts)]
@@ -92,6 +184,27 @@ pub struct SwapTransitive<'info> {
     pub dex_program: AccountInfo<'info>,
     // The token program
     pub token_program: AccountInfo<'info>,
+}
+
+impl<'info> SwapTransitive<'info> {
+    fn orderbook_from(&self) -> OrderbookClient<'info> {
+        OrderbookClient {
+            market: self.from.clone(),
+            wallet_owner: self.wallet_owner.clone(),
+            pc_wallet: self.pc_wallet.clone(),
+            dex_program: self.dex_program.clone(),
+            token_program: self.token_program.clone(),
+        }
+    }
+    fn orderbook_to(&self) -> OrderbookClient<'info> {
+        OrderbookClient {
+            market: self.to.clone(),
+            wallet_owner: self.wallet_owner.clone(),
+            pc_wallet: self.pc_wallet.clone(),
+            dex_program: self.dex_program.clone(),
+            token_program: self.token_program.clone(),
+        }
+    }
 }
 
 // Market accounts are the accounts used to place orders against the dex minus
@@ -225,4 +338,6 @@ fn _is_valid_swap<'info>(from: &AccountInfo<'info>, to: &AccountInfo<'info>) -> 
 pub enum ErrorCode {
     #[msg("The tokens being swapped must have different mints")]
     SwapTokensCannotMatch,
+    #[msg("The implied limit price is invalid")]
+    InvalidLimitPrice,
 }

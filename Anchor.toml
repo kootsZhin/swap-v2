@@ -5,6 +5,10 @@ skip-lint = true
 [programs.localnet]
 swap_v2 = "Fg6PaFpoGXkYsidMpWTK6W2BeZ7FEfcYkg476zPFsLnS"
 
+[[test.genesis]]
+address ="9cnJvRQY38Bu7dWUUCncZ53evxZ4mR4S9vYV8BpToh26"
+program = "./deps/serum-dex/dex/target/deploy/serum_dex.so"
+
 [registry]
 url = "https://api.apr.dev"
 

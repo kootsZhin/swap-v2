@@ -20,4 +20,4 @@ anchor-lang = "0.25.0"
 anchor-spl = "0.25.0"
 solana-program = "~1.10"
 
-serum_dex = { path='../../../serum-dex-sendTake/dex', features = ['no-entrypoint'] }
+serum_dex = { path='../../deps/serum-dex/dex', features = ['no-entrypoint'] }
