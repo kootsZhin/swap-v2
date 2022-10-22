@@ -1,13 +1,20 @@
 import * as anchor from "@project-serum/anchor";
 import { Program } from "@project-serum/anchor";
 import { Coin, Dex, DexMarket, FileKeypair } from "@project-serum/serum-dev-tools";
-import { getAssociatedTokenAddress } from "@solana/spl-token";
+import { getAssociatedTokenAddress, TOKEN_PROGRAM_ID } from "@solana/spl-token";
 import { Keypair, LAMPORTS_PER_SOL, PublicKey } from "@solana/web3.js";
+import { assert } from "chai";
 import { SwapV2 } from "../target/types/swap_v2";
+import { setupOrderbook, Side } from "./utils";
 
 const DEX_ADDRESS = '9cnJvRQY38Bu7dWUUCncZ53evxZ4mR4S9vYV8BpToh26';
 
+const BTC_PRICE = 19000;
+const ETH_PRICE = 1300;
+const TAKER_FEE = 0.0004;
+
 describe("swap-v2", () => {
+
   // Configure the client to use the local cluster.
   anchor.setProvider(
     anchor.AnchorProvider.local('http://localhost:8899', {
@@ -16,7 +23,6 @@ describe("swap-v2", () => {
     })
   );
 
-  // anchor.setProvider(anchor.AnchorProvider.env());
   const program = anchor.workspace.SwapV2 as Program<SwapV2>;
   const connection = program.provider.connection;
 
@@ -27,7 +33,6 @@ describe("swap-v2", () => {
     ethMarket: DexMarket,
     btcMarketVaultSigner: PublicKey,
     ethMarketVaultSigner: PublicKey;
-
 
   const MarketsOwner = FileKeypair.loadOrGenerate("./owner.json");
   const marketsOwner = MarketsOwner.keypair;
@@ -45,70 +50,59 @@ describe("swap-v2", () => {
     await connection.confirmTransaction(
       await connection.requestAirdrop(
         marketsOwner.publicKey,
-        10 * LAMPORTS_PER_SOL
+        100 * LAMPORTS_PER_SOL
       ),
       'confirmed'
     );
 
-    BTC = await dex.createCoin('BTC', 9, marketsOwner, marketsOwner, marketsOwner);
-    ETH = await dex.createCoin('ETH', 9, marketsOwner, marketsOwner, marketsOwner);
-    USDC = await dex.createCoin('USDC', 9, marketsOwner, marketsOwner, marketsOwner);
+    BTC = await dex.createCoin('BTC', 6, marketsOwner, marketsOwner, marketsOwner);
+    ETH = await dex.createCoin('ETH', 6, marketsOwner, marketsOwner, marketsOwner);
+    USDC = await dex.createCoin('USDC', 6, marketsOwner, marketsOwner, marketsOwner);
 
     btcMarket = await dex.initDexMarket(marketsOwner, BTC, USDC, {
-      lotSize: 1e-3,
-      tickSize: 1e-2,
+      tickSize: 0.1,
+      lotSize: 0.0001,
     });
 
-    [btcMarketVaultSigner] = await PublicKey.findProgramAddress(
-      [btcMarket.address.toBuffer()],
-      program.programId
+    btcMarketVaultSigner = PublicKey.createProgramAddressSync(
+      [
+        btcMarket.address.toBuffer(),
+        btcMarket.serumMarket.decoded.vaultSignerNonce.toArrayLike(Buffer, 'le', 8),
+      ],
+      dexAddres
     );
-
-    console.log(`Created ${btcMarket.marketSymbol} market @ ${btcMarket.address.toString()}`);
 
     ethMarket = await dex.initDexMarket(marketsOwner, ETH, USDC, {
-      lotSize: 1e-3,
-      tickSize: 1e-2,
+      lotSize: 0.001,
+      tickSize: 0.001,
     });
 
-    [ethMarketVaultSigner] = await PublicKey.findProgramAddress(
-      [ethMarket.address.toBuffer()],
-      program.programId
+    ethMarketVaultSigner = PublicKey.createProgramAddressSync(
+      [
+        ethMarket.address.toBuffer(),
+        ethMarket.serumMarket.decoded.vaultSignerNonce.toArrayLike(Buffer, 'le', 8),
+      ],
+      dexAddres
     );
 
-    console.log(`Created ${ethMarket.marketSymbol} market @ ${ethMarket.address.toString()}`);
+    await BTC.fundAccount(1e10, marketsOwner, connection);
+    await ETH.fundAccount(1e10, marketsOwner, connection);
+    await USDC.fundAccount(1e10, marketsOwner, connection);
 
-    await BTC.fundAccount(100, marketsOwner, connection);
-    await ETH.fundAccount(1000000, marketsOwner, connection);
-    await USDC.fundAccount(100000000, marketsOwner, connection);
-
-    dex.runMarketMaker(btcMarket, MarketsOwner, {
-      durationInSecs: 30,
-      orderCount: 3,
-      initialBidSize: 1000,
-      baseGeckoSymbol: "bitcoin",
-      quoteGeckoSymbol: "usd",
-      verbose: true,
+    await setupOrderbook(connection, {
+      market: btcMarket,
+      marketMaker: marketsOwner,
+      midPrice: BTC_PRICE,
+      size: 100,
     });
 
-    dex.runMarketMaker(ethMarket, MarketsOwner, {
-      durationInSecs: 30,
-      orderCount: 3,
-      initialBidSize: 1000,
-      baseGeckoSymbol: "ethereum",
-      quoteGeckoSymbol: "usd",
-      verbose: true,
+    await setupOrderbook(connection, {
+      market: ethMarket,
+      marketMaker: marketsOwner,
+      midPrice: ETH_PRICE,
+      size: 1000,
     });
 
-    dex.runCrank(btcMarket, MarketsOwner, {
-      durationInSecs: 20,
-      verbose: true,
-    });
-
-    dex.runCrank(ethMarket, MarketsOwner, {
-      durationInSecs: 20,
-      verbose: true,
-    });
   });
 
   it("BOILERPLATE: Sets up account for Alice", async () => {
@@ -120,50 +114,379 @@ describe("swap-v2", () => {
       'confirmed'
     );
 
-    await BTC.fundAccount(100, Alice, connection);
-    await ETH.fundAccount(1000000, Alice, connection);
-    await USDC.fundAccount(100000000, Alice, connection);
+    await BTC.fundAccount(10, Alice, connection);
+    await ETH.fundAccount(100, Alice, connection);
+    await USDC.fundAccount(1e7, Alice, connection);
 
     aliceBtcAccount = await getAssociatedTokenAddress(BTC.mint, Alice.publicKey);
     aliceEthAccount = await getAssociatedTokenAddress(ETH.mint, Alice.publicKey);
     aliceUsdcAccount = await getAssociatedTokenAddress(USDC.mint, Alice.publicKey);
   });
 
-  it('Swap from BTC -> USDC', async () => {
-    const tx = await program.methods.test().transaction();
-    const txid = await program.provider.sendAndConfirm(tx, [], { skipPreflight: true });
-    console.log(txid);
+  it('should swap from BTC -> USDC', async () => {
+    const swapBtcInput = 1;
+    const expectedUsdcOutput = (BTC_PRICE - 1) * (1 - TAKER_FEE);
 
-    // await program.methods
-    //   .swap(
-    //     Side.Ask,
-    //     new anchor.BN(100),
-    //     new anchor.BN(0),
-    //   )
-    //   .accounts({
-    //     market: {
-    //       market: btcMarket.address,
-    //       requestQueue: btcMarket.serumMarket.decoded.requestQueue,
-    //       eventQueue: btcMarket.serumMarket.decoded.eventQueue,
-    //       marketBids: btcMarket.serumMarket.decoded.bids,
-    //       marketAsks: btcMarket.serumMarket.decoded.asks,
-    //       coinVault: btcMarket.serumMarket.decoded.baseVault,
-    //       pcVault: btcMarket.serumMarket.decoded.quoteVault,
-    //       vaultSigner: btcMarketVaultSigner,
-    //       coinWallet: aliceBtcAccount,
-    //     },
-    //     walletOwner: Alice.publicKey,
-    //     pcWallet: aliceUsdcAccount,
-    //     dexProgram: dexAddres,
-    //     tokenProgram: TOKEN_PROGRAM_ID,
-    //   })
-    //   .signers([Alice])
-    // .rpc();
-  })
+    const btcBalanceBefore = await connection.getTokenAccountBalance(aliceBtcAccount);
+    const usdcBalanceBefore = await connection.getTokenAccountBalance(aliceUsdcAccount);
+
+    const swapTx = await program.methods
+      .swap(
+        Side.Ask,
+        new anchor.BN(swapBtcInput * 10 ** BTC.decimals),
+        new anchor.BN(0),
+      )
+      .accounts({
+        market: {
+          market: btcMarket.address,
+          requestQueue: btcMarket.serumMarket.decoded.requestQueue,
+          eventQueue: btcMarket.serumMarket.decoded.eventQueue,
+          marketBids: btcMarket.serumMarket.decoded.bids,
+          marketAsks: btcMarket.serumMarket.decoded.asks,
+          coinVault: btcMarket.serumMarket.decoded.baseVault,
+          pcVault: btcMarket.serumMarket.decoded.quoteVault,
+          vaultSigner: btcMarketVaultSigner,
+          coinWallet: aliceBtcAccount,
+        },
+        walletOwner: Alice.publicKey,
+        pcWallet: aliceUsdcAccount,
+        dexProgram: dexAddres,
+        tokenProgram: TOKEN_PROGRAM_ID,
+      })
+      .signers([Alice])
+      .rpc({ skipPreflight: true });
+
+    const btcBalanceAfter = await connection.getTokenAccountBalance(aliceBtcAccount);
+    const usdcBalanceAfter = await connection.getTokenAccountBalance(aliceUsdcAccount);
+
+    const btcBalanceChange = btcBalanceAfter.value.uiAmount - btcBalanceBefore.value.uiAmount;
+    const usdcBalanceChange = usdcBalanceAfter.value.uiAmount - usdcBalanceBefore.value.uiAmount;
+
+    assert.ok(-btcBalanceChange === swapBtcInput);
+    assert.ok(usdcBalanceChange <= expectedUsdcOutput);
+  });
+
+  it('should swap from USDC -> BTC', async () => {
+    const swapUsdcInput = 1000;
+    const expectedBtcOutput = swapUsdcInput / (BTC_PRICE + 1) * (1 - TAKER_FEE);
+
+    const btcBalanceBefore = await connection.getTokenAccountBalance(aliceBtcAccount);
+    const usdcBalanceBefore = await connection.getTokenAccountBalance(aliceUsdcAccount);
+
+    const swapTx = await program.methods
+      .swap(
+        Side.Bid,
+        new anchor.BN(1e3 * 10 ** USDC.decimals),
+        new anchor.BN(0),
+      )
+      .accounts({
+        market: {
+          market: btcMarket.address,
+          requestQueue: btcMarket.serumMarket.decoded.requestQueue,
+          eventQueue: btcMarket.serumMarket.decoded.eventQueue,
+          marketBids: btcMarket.serumMarket.decoded.bids,
+          marketAsks: btcMarket.serumMarket.decoded.asks,
+          coinVault: btcMarket.serumMarket.decoded.baseVault,
+          pcVault: btcMarket.serumMarket.decoded.quoteVault,
+          vaultSigner: btcMarketVaultSigner,
+          coinWallet: aliceBtcAccount,
+        },
+        walletOwner: Alice.publicKey,
+        pcWallet: aliceUsdcAccount,
+        dexProgram: dexAddres,
+        tokenProgram: TOKEN_PROGRAM_ID,
+      })
+      .signers([Alice])
+      .rpc({ skipPreflight: true });
+    console.log(swapTx);
+    const btcBalanceAfter = await connection.getTokenAccountBalance(aliceBtcAccount);
+    const usdcBalanceAfter = await connection.getTokenAccountBalance(aliceUsdcAccount);
+
+    const btcBalanceChange = btcBalanceAfter.value.uiAmount - btcBalanceBefore.value.uiAmount;
+    const usdcBalanceChange = usdcBalanceAfter.value.uiAmount - usdcBalanceBefore.value.uiAmount;
+
+    assert.ok(-usdcBalanceChange <= swapUsdcInput);
+    assert.ok(btcBalanceChange <= expectedBtcOutput);
+  });
+
+  it('should fail to swap because min output not met', async () => {
+    const swapBtcInput = 1;
+    const expectedUsdcOutput = (BTC_PRICE - 1) * (1 - TAKER_FEE);
+    const expectedToFailMinUsdcOutput = expectedUsdcOutput + 1;
+
+    const btcBalanceBefore = await connection.getTokenAccountBalance(aliceBtcAccount);
+    const usdcBalanceBefore = await connection.getTokenAccountBalance(aliceUsdcAccount);
+
+    try {
+      const swapTx = await program.methods
+        .swap(
+          Side.Ask,
+          new anchor.BN(swapBtcInput * 10 ** BTC.decimals),
+          new anchor.BN(expectedToFailMinUsdcOutput * 10 ** USDC.decimals),
+        )
+        .accounts({
+          market: {
+            market: btcMarket.address,
+            requestQueue: btcMarket.serumMarket.decoded.requestQueue,
+            eventQueue: btcMarket.serumMarket.decoded.eventQueue,
+            marketBids: btcMarket.serumMarket.decoded.bids,
+            marketAsks: btcMarket.serumMarket.decoded.asks,
+            coinVault: btcMarket.serumMarket.decoded.baseVault,
+            pcVault: btcMarket.serumMarket.decoded.quoteVault,
+            vaultSigner: btcMarketVaultSigner,
+            coinWallet: aliceBtcAccount,
+          },
+          walletOwner: Alice.publicKey,
+          pcWallet: aliceUsdcAccount,
+          dexProgram: dexAddres,
+          tokenProgram: TOKEN_PROGRAM_ID,
+        })
+        .signers([Alice])
+        .rpc({ skipPreflight: true });
+    } catch (err) {
+      const btcBalanceAfter = await connection.getTokenAccountBalance(aliceBtcAccount);
+      const usdcBalanceAfter = await connection.getTokenAccountBalance(aliceUsdcAccount);
+
+      const btcBalanceChange = btcBalanceAfter.value.uiAmount - btcBalanceBefore.value.uiAmount;
+      const usdcBalanceChange = usdcBalanceAfter.value.uiAmount - usdcBalanceBefore.value.uiAmount;
+
+      assert.ok(btcBalanceChange === 0);
+      assert.ok(usdcBalanceChange === 0);
+
+      return;
+    };
+
+    assert.fail("Swap should have failed because min output not met");
+  });
+
+  it('should fail to swap because of mints cannot match', async () => {
+    const swapBtcInput = 1;
+
+    const btcBalanceBefore = await connection.getTokenAccountBalance(aliceBtcAccount);
+    const usdcBalanceBefore = await connection.getTokenAccountBalance(aliceUsdcAccount);
+
+    try {
+      const swapTx = await program.methods
+        .swap(
+          Side.Ask,
+          new anchor.BN(swapBtcInput * 10 ** BTC.decimals),
+          new anchor.BN(0),
+        )
+        .accounts({
+          market: {
+            market: btcMarket.address,
+            requestQueue: btcMarket.serumMarket.decoded.requestQueue,
+            eventQueue: btcMarket.serumMarket.decoded.eventQueue,
+            marketBids: btcMarket.serumMarket.decoded.bids,
+            marketAsks: btcMarket.serumMarket.decoded.asks,
+            coinVault: btcMarket.serumMarket.decoded.baseVault,
+            pcVault: btcMarket.serumMarket.decoded.quoteVault,
+            vaultSigner: btcMarketVaultSigner,
+            coinWallet: aliceBtcAccount,
+          },
+          walletOwner: Alice.publicKey,
+          pcWallet: aliceBtcAccount,
+          dexProgram: dexAddres,
+          tokenProgram: TOKEN_PROGRAM_ID,
+        })
+        .signers([Alice])
+        .rpc({ skipPreflight: true });
+    } catch (err) {
+      const btcBalanceAfter = await connection.getTokenAccountBalance(aliceBtcAccount);
+      const usdcBalanceAfter = await connection.getTokenAccountBalance(aliceUsdcAccount);
+
+      const btcBalanceChange = btcBalanceAfter.value.uiAmount - btcBalanceBefore.value.uiAmount;
+      const usdcBalanceChange = usdcBalanceAfter.value.uiAmount - usdcBalanceBefore.value.uiAmount;
+
+      assert.ok(btcBalanceChange === 0);
+      assert.ok(usdcBalanceChange === 0);
+
+      return;
+    };
+
+    assert.fail('Swap should have failed');
+  });
+
+  it('should swap transitively from ETH -> BTC', async () => {
+    const swapEthInput = 1;
+    const expectedBtcOutput = swapEthInput * (ETH_PRICE - 1) / (BTC_PRICE + 1) * (1 - TAKER_FEE);
+
+    const ethBalanceBefore = await connection.getTokenAccountBalance(aliceEthAccount);
+    const btcBalanceBefore = await connection.getTokenAccountBalance(aliceBtcAccount);
+    const usdcBalanceBefore = await connection.getTokenAccountBalance(aliceUsdcAccount);
+
+    const swapTx = await program.methods.swapTransitive(
+      new anchor.BN(1 * 10 ** ETH.decimals),
+      new anchor.BN(0),
+    )
+      .accounts({
+        from: {
+          market: ethMarket.address,
+          requestQueue: ethMarket.serumMarket.decoded.requestQueue,
+          eventQueue: ethMarket.serumMarket.decoded.eventQueue,
+          marketBids: ethMarket.serumMarket.decoded.bids,
+          marketAsks: ethMarket.serumMarket.decoded.asks,
+          coinVault: ethMarket.serumMarket.decoded.baseVault,
+          pcVault: ethMarket.serumMarket.decoded.quoteVault,
+          vaultSigner: ethMarketVaultSigner,
+          coinWallet: aliceEthAccount,
+        },
+        to: {
+          market: btcMarket.address,
+          requestQueue: btcMarket.serumMarket.decoded.requestQueue,
+          eventQueue: btcMarket.serumMarket.decoded.eventQueue,
+          marketBids: btcMarket.serumMarket.decoded.bids,
+          marketAsks: btcMarket.serumMarket.decoded.asks,
+          coinVault: btcMarket.serumMarket.decoded.baseVault,
+          pcVault: btcMarket.serumMarket.decoded.quoteVault,
+          vaultSigner: btcMarketVaultSigner,
+          coinWallet: aliceBtcAccount,
+        },
+        walletOwner: Alice.publicKey,
+        pcWallet: aliceUsdcAccount,
+        dexProgram: dexAddres,
+        tokenProgram: TOKEN_PROGRAM_ID,
+      })
+      .signers([Alice])
+      .rpc({ skipPreflight: true });
+    console.log('swapTx', swapTx);
+    const ethBalanceAfter = await connection.getTokenAccountBalance(aliceEthAccount);
+    const btcBalanceAfter = await connection.getTokenAccountBalance(aliceBtcAccount);
+    const usdcBalanceAfter = await connection.getTokenAccountBalance(aliceUsdcAccount);
+
+    const ethBalanceChange = ethBalanceAfter.value.uiAmount - ethBalanceBefore.value.uiAmount;
+    const btcBalanceChange = btcBalanceAfter.value.uiAmount - btcBalanceBefore.value.uiAmount;
+    const usdcBalanceChange = usdcBalanceAfter.value.uiAmount - usdcBalanceBefore.value.uiAmount;
+
+    assert.ok(-ethBalanceChange <= swapEthInput);
+    assert.ok(btcBalanceChange <= expectedBtcOutput);
+    assert.ok(usdcBalanceChange >= 0);
+  });
+
+  it('should fail to swap transitively because min output not met', async () => {
+    const swapEthInput = 1;
+    const expectedBtcOutput = swapEthInput * (ETH_PRICE - 1) / (BTC_PRICE + 1) * (1 - TAKER_FEE);
+    const expectedToFailMinBtcOutput = expectedBtcOutput + 1;
+
+    const ethBalanceBefore = await connection.getTokenAccountBalance(aliceEthAccount);
+    const btcBalanceBefore = await connection.getTokenAccountBalance(aliceBtcAccount);
+    const usdcBalanceBefore = await connection.getTokenAccountBalance(aliceUsdcAccount);
+
+    try {
+      const swapTx = await program.methods.swapTransitive(
+        new anchor.BN(1 * 10 ** ETH.decimals),
+        new anchor.BN(expectedToFailMinBtcOutput * 10 ** BTC.decimals),
+      )
+        .accounts({
+          from: {
+            market: ethMarket.address,
+            requestQueue: ethMarket.serumMarket.decoded.requestQueue,
+            eventQueue: ethMarket.serumMarket.decoded.eventQueue,
+            marketBids: ethMarket.serumMarket.decoded.bids,
+            marketAsks: ethMarket.serumMarket.decoded.asks,
+            coinVault: ethMarket.serumMarket.decoded.baseVault,
+            pcVault: ethMarket.serumMarket.decoded.quoteVault,
+            vaultSigner: ethMarketVaultSigner,
+            coinWallet: aliceEthAccount,
+          },
+          to: {
+            market: btcMarket.address,
+            requestQueue: btcMarket.serumMarket.decoded.requestQueue,
+            eventQueue: btcMarket.serumMarket.decoded.eventQueue,
+            marketBids: btcMarket.serumMarket.decoded.bids,
+            marketAsks: btcMarket.serumMarket.decoded.asks,
+            coinVault: btcMarket.serumMarket.decoded.baseVault,
+            pcVault: btcMarket.serumMarket.decoded.quoteVault,
+            vaultSigner: btcMarketVaultSigner,
+            coinWallet: aliceBtcAccount,
+          },
+          walletOwner: Alice.publicKey,
+          pcWallet: aliceUsdcAccount,
+          dexProgram: dexAddres,
+          tokenProgram: TOKEN_PROGRAM_ID,
+        })
+        .signers([Alice])
+        .rpc({ skipPreflight: true });
+    } catch (err) {
+      const ethBalanceAfter = await connection.getTokenAccountBalance(aliceEthAccount);
+      const btcBalanceAfter = await connection.getTokenAccountBalance(aliceBtcAccount);
+      const usdcBalanceAfter = await connection.getTokenAccountBalance(aliceUsdcAccount);
+
+      const ethBalanceChange = ethBalanceAfter.value.uiAmount - ethBalanceBefore.value.uiAmount;
+      const btcBalanceChange = btcBalanceAfter.value.uiAmount - btcBalanceBefore.value.uiAmount;
+      const usdcBalanceChange = usdcBalanceAfter.value.uiAmount - usdcBalanceBefore.value.uiAmount;
+
+      assert.ok(ethBalanceChange === 0);
+      assert.ok(btcBalanceChange === 0);
+      assert.ok(usdcBalanceChange === 0);
+
+      return;
+    }
+
+    assert.fail('Swap Transitive should have failed because min output not met');
+  });
+
+  it('should fail to swap transitively because mints cannot match', async () => {
+    const swapEthInput = 1;
+    const expectedBtcOutput = swapEthInput * (ETH_PRICE - 1) / (BTC_PRICE + 1) * (1 - TAKER_FEE);
+    const expectedToFailMinBtcOutput = expectedBtcOutput + 1;
+
+    const ethBalanceBefore = await connection.getTokenAccountBalance(aliceEthAccount);
+    const btcBalanceBefore = await connection.getTokenAccountBalance(aliceBtcAccount);
+    const usdcBalanceBefore = await connection.getTokenAccountBalance(aliceUsdcAccount);
+
+    try {
+      const swapTx = await program.methods.swapTransitive(
+        new anchor.BN(1 * 10 ** ETH.decimals),
+        new anchor.BN(0),
+      )
+        .accounts({
+          from: {
+            market: ethMarket.address,
+            requestQueue: ethMarket.serumMarket.decoded.requestQueue,
+            eventQueue: ethMarket.serumMarket.decoded.eventQueue,
+            marketBids: ethMarket.serumMarket.decoded.bids,
+            marketAsks: ethMarket.serumMarket.decoded.asks,
+            coinVault: ethMarket.serumMarket.decoded.baseVault,
+            pcVault: ethMarket.serumMarket.decoded.quoteVault,
+            vaultSigner: ethMarketVaultSigner,
+            coinWallet: aliceEthAccount,
+          },
+          to: {
+            market: btcMarket.address,
+            requestQueue: btcMarket.serumMarket.decoded.requestQueue,
+            eventQueue: btcMarket.serumMarket.decoded.eventQueue,
+            marketBids: btcMarket.serumMarket.decoded.bids,
+            marketAsks: btcMarket.serumMarket.decoded.asks,
+            coinVault: btcMarket.serumMarket.decoded.baseVault,
+            pcVault: btcMarket.serumMarket.decoded.quoteVault,
+            vaultSigner: btcMarketVaultSigner,
+            coinWallet: aliceBtcAccount,
+          },
+          walletOwner: Alice.publicKey,
+          pcWallet: aliceBtcAccount,
+          dexProgram: dexAddres,
+          tokenProgram: TOKEN_PROGRAM_ID,
+        })
+        .signers([Alice])
+        .rpc({ skipPreflight: true });
+    } catch (err) {
+      const ethBalanceAfter = await connection.getTokenAccountBalance(aliceEthAccount);
+      const btcBalanceAfter = await connection.getTokenAccountBalance(aliceBtcAccount);
+      const usdcBalanceAfter = await connection.getTokenAccountBalance(aliceUsdcAccount);
+
+      const ethBalanceChange = ethBalanceAfter.value.uiAmount - ethBalanceBefore.value.uiAmount;
+      const btcBalanceChange = btcBalanceAfter.value.uiAmount - btcBalanceBefore.value.uiAmount;
+      const usdcBalanceChange = usdcBalanceAfter.value.uiAmount - usdcBalanceBefore.value.uiAmount;
+
+      assert.ok(ethBalanceChange === 0);
+      assert.ok(btcBalanceChange === 0);
+      assert.ok(usdcBalanceChange === 0);
+
+      return;
+    }
+
+    assert.fail('Swap Transitive should have failed because mints cannot match');
+  });
+
 });
-
-// Side rust enum used for the program's RPC API.
-const Side = {
-  Bid: { bid: {} },
-  Ask: { ask: {} },
-};

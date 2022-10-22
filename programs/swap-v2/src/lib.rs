@@ -4,13 +4,16 @@ use std::num::NonZeroU64;
 
 use anchor_lang::prelude::*;
 use anchor_spl::token;
+use serum_dex::state::MarketState;
+use solana_program::entrypoint::ProgramResult;
 
-declare_id!("Fg6PaFpoGXkYsidMpWTK6W2BeZ7FEfcYkg476zPFsLnS");
+declare_id!("67xM9uiXp22dNRbhDy9t8bbaEP8hyP4VVdctXkk9Lx2Y");
 
 pub mod dex;
 
 #[program]
 pub mod swap_v2 {
+
     use super::*;
 
     /// Convenience API to call the SendTake function on the Serum DEX.
@@ -22,19 +25,24 @@ pub mod swap_v2 {
     /// where A is the base currency and B is the quote currency.
     ///
     /// When side is "bid", then swaps B for A. When side is "ask", then swaps A for B.
+    ///
+    /// When side is 'bid', amount -> B, amount_out_min -> A, the implied price (of A) is amount/amount_out_min.,
+    /// e.g. if amount = 1000, amount_out_min = 100, then the implied price is 1000/100 = 10.
+    ///
+    /// Similarly, when side is 'ask', amount -> A, amount_out_min -> B, the implied price (of A) is amount_out_min/amount,
 
     /// * `side`           - The direction to swap.
-    /// * `amount`         - The amount to swap "from".
-    /// * `amount_out_min` - The minimum amount of the "to" token the client expects to receive from the swap.
-    /// The instruction fails if execution would result in less.
+    /// * `amount_in_max`  - The max input  amount to swap "from".
+    /// * `amount_out_min` - The minimum output amount of the "to" token, the instruction fails if execution would result in less.
 
     #[access_control(is_valid_swap(&ctx))]
     pub fn swap<'info>(
         ctx: Context<'_, '_, '_, 'info, Swap<'info>>,
         side: Side,
-        amount: u64,
+        amount_in_max: u64,
         amount_out_min: u64,
     ) -> Result<()> {
+        msg!("Serum Swap Instruction: Swap");
         // Optional referral account (earns a referral fee).
         let srm_msrm_discount = ctx.remaining_accounts.iter().next().map(Clone::clone);
         let orderbook: OrderbookClient<'info> = (&*ctx.accounts).into();
@@ -45,59 +53,14 @@ pub mod swap_v2 {
             Side::Ask => (&ctx.accounts.market.coin_wallet, &ctx.accounts.pc_wallet),
         };
 
-        // Calculate the limit price.
-        let (
-            limit_price,
-            max_coin_qty,
-            max_native_max_native_pc_qty_including_fees,
-            min_coin_qty,
-            min_native_pc_qty,
-        ) = match side {
-            Side::Bid => {
-                let limit_price = amount_out_min / amount;
-                NonZeroU64::new(limit_price).ok_or(ErrorCode::InvalidLimitPrice)?;
-                let max_coin_qty = amount / limit_price;
-                let max_native_max_native_pc_qty_including_fees = amount;
-                let min_coin_qty = amount_out_min;
-                let min_native_pc_qty = amount_out_min * limit_price;
-                (
-                    limit_price,
-                    max_coin_qty,
-                    max_native_max_native_pc_qty_including_fees,
-                    min_coin_qty,
-                    min_native_pc_qty,
-                )
-            }
-            Side::Ask => {
-                let limit_price = amount / amount_out_min;
-                NonZeroU64::new(limit_price).ok_or(ErrorCode::InvalidLimitPrice)?;
-                let max_coin_qty = amount;
-                let max_native_max_native_pc_qty_including_fees = amount * limit_price;
-                let min_coin_qty = amount_out_min / limit_price;
-                let min_native_pc_qty = amount_out_min;
-                (
-                    limit_price,
-                    max_coin_qty,
-                    max_native_max_native_pc_qty_including_fees,
-                    min_coin_qty,
-                    min_native_pc_qty,
-                )
-            }
-        };
-
         // Token balances before the trade.
         let from_amount_before = token::accessor::amount(from_token)?;
         let to_amount_before = token::accessor::amount(to_token)?;
 
-        orderbook.send_take_cpi(
-            side,
-            limit_price,
-            max_coin_qty,
-            max_native_max_native_pc_qty_including_fees,
-            min_coin_qty,
-            min_native_pc_qty,
-            srm_msrm_discount,
-        )?;
+        match side {
+            Side::Bid => orderbook.bid(amount_in_max, amount_out_min, srm_msrm_discount)?,
+            Side::Ask => orderbook.ask(amount_in_max, amount_out_min, srm_msrm_discount)?,
+        };
 
         // Token balances after the trade.
         let from_amount_after = token::accessor::amount(from_token)?;
@@ -106,6 +69,8 @@ pub mod swap_v2 {
         //  Calculate the delta, i.e. the amount swapped.
         let from_amount = from_amount_before.checked_sub(from_amount_after).unwrap();
         let to_amount = to_amount_after.checked_sub(to_amount_before).unwrap();
+
+        apply_safety_checks(amount_in_max, amount_out_min, from_amount, to_amount)?;
 
         Ok(())
     }
@@ -118,27 +83,58 @@ pub mod swap_v2 {
     /// 1. Selling A to USD(x) on A/USD(x) market using SendTake.
     /// 2. Buying B using the proceed USD(x) on B/USD(x) market using SendTake.
 
-    /// * `amount`         - The amount to swap "from".
-    /// * `amount_out_min` - The minimum amount of the "to" token the client expects to receive from the swap.
-    /// The instruction fails if execution would result in less.
+    /// * `amount_in_max`  - The max input  amount to swap "from".
+    /// * `amount_out_min` - The minimum output amount of the "to" token, the instruction fails if execution would result in less.
 
     #[access_control(is_valid_swap_transitive(&ctx))]
     pub fn swap_transitive<'info>(
         ctx: Context<'_, '_, '_, 'info, SwapTransitive<'info>>,
-        amount: u64,
+        amount_in_max: u64,
         amount_out_min: u64,
     ) -> Result<()> {
-        todo!()
-    }
+        msg!("Serum Swap Instruction: Swap Transitive");
+        let srm_msrm_discount = ctx.remaining_accounts.iter().next().map(Clone::clone);
 
-    pub fn test<'info>(ctx: Context<TEST>) -> Result<()> {
-        msg!("Hello, world!");
+        // Leg 1 : A -> USD(x)
+        let (from_amount, sell_proceeds) = {
+            let coin_before = token::accessor::amount(&ctx.accounts.from.coin_wallet)?;
+            let pc_before = token::accessor::amount(&ctx.accounts.pc_wallet)?;
+
+            let orderbook: OrderbookClient<'info> = ctx.accounts.orderbook_from();
+            orderbook.ask(amount_in_max, 0, srm_msrm_discount.clone())?;
+
+            let coin_after = token::accessor::amount(&ctx.accounts.from.coin_wallet)?;
+            let pc_after = token::accessor::amount(&ctx.accounts.pc_wallet)?;
+            (
+                coin_before.checked_sub(coin_after).unwrap(),
+                pc_after.checked_sub(pc_before).unwrap(),
+            )
+        };
+
+        // Leg 2 : USD(x) -> B
+        let (to_amount, buy_proceeds) = {
+            let coin_before = token::accessor::amount(&ctx.accounts.to.coin_wallet)?;
+            let pc_before = token::accessor::amount(&ctx.accounts.pc_wallet)?;
+
+            let orderbook: OrderbookClient<'info> = ctx.accounts.orderbook_to();
+            orderbook.bid(sell_proceeds, amount_out_min, srm_msrm_discount.clone())?;
+
+            let coin_after = token::accessor::amount(&ctx.accounts.to.coin_wallet)?;
+            let pc_after = token::accessor::amount(&ctx.accounts.pc_wallet)?;
+            (
+                coin_after.checked_sub(coin_before).unwrap(),
+                pc_before.checked_sub(pc_after).unwrap(),
+            )
+        };
+
+        let spill_amount = sell_proceeds.checked_sub(buy_proceeds).unwrap();
+        msg!("Intermediate token spill amount: {:?}", spill_amount);
+
+        apply_safety_checks(amount_in_max, amount_out_min, from_amount, to_amount)?;
+
         Ok(())
     }
 }
-
-#[derive(Accounts)]
-pub struct TEST {}
 
 #[derive(Accounts)]
 pub struct Swap<'info> {
@@ -253,17 +249,69 @@ struct OrderbookClient<'info> {
 }
 
 impl<'info> OrderbookClient<'info> {
+    /// 'Swap' from pc to coin - Bid
+    fn bid(
+        &self,
+        max_pc_amount_input: u64,
+        min_coin_amount_output: u64,
+        srm_msrm_discount: Option<AccountInfo<'info>>,
+    ) -> ProgramResult {
+        let limit_price = u64::MAX;
+        let max_coin_qty = u64::MAX;
+        let max_native_pc_qty_including_fees = max_pc_amount_input;
+        let min_coin_qty = {
+            let market = MarketState::load(&self.market.market, &dex::ID, false)?;
+            coin_lots(&market, min_coin_amount_output)
+        };
+        let min_native_pc_qty = 0;
+        self.send_take_cpi(
+            Side::Bid,
+            limit_price,
+            max_coin_qty,
+            max_native_pc_qty_including_fees,
+            min_coin_qty,
+            min_native_pc_qty,
+            srm_msrm_discount,
+        )
+    }
+
+    /// 'Swap' from coin to pc - Ask
+    fn ask(
+        &self,
+        max_coin_amount_input: u64,
+        min_pc_amount_output: u64,
+        srm_msrm_discount: Option<AccountInfo<'info>>,
+    ) -> ProgramResult {
+        let limit_price = 1;
+        let max_coin_qty = {
+            let market = MarketState::load(&self.market.market, &dex::ID, false)?;
+            coin_lots(&market, max_coin_amount_input)
+        };
+        let max_native_pc_qty_including_fees = u64::MAX;
+        let min_coin_qty = max_coin_qty;
+        let min_native_pc_qty = min_pc_amount_output;
+        self.send_take_cpi(
+            Side::Ask,
+            limit_price,
+            max_coin_qty,
+            max_native_pc_qty_including_fees,
+            min_coin_qty,
+            min_native_pc_qty,
+            srm_msrm_discount,
+        )
+    }
+
     /// Execute SendTake on the Serum DEX via CPI.
     fn send_take_cpi(
         &self,
         side: Side,
         limit_price: u64,
         max_coin_qty: u64,
-        max_native_max_native_pc_qty_including_fees: u64,
+        max_native_pc_qty_including_fees: u64,
         min_coin_qty: u64,
         min_native_pc_qty: u64,
         srm_msrm_discount: Option<AccountInfo<'info>>,
-    ) -> Result<()> {
+    ) -> ProgramResult {
         let cpi_accounts = dex::SendTake {
             market: self.market.market.clone(),
             request_queue: self.market.request_queue.clone(),
@@ -286,12 +334,13 @@ impl<'info> OrderbookClient<'info> {
         if let Some(srm_msrm_discount) = srm_msrm_discount {
             ctx = ctx.with_remaining_accounts(vec![srm_msrm_discount]);
         }
+        msg!("Sending take CPI: side: {:?}, limit_price: {}, max_coin_qty: {}, max_native_pc_qty_including_fees: {}, min_coin_qty: {}, min_native_pc_qty: {}, limit: {}", side, limit_price, max_coin_qty, max_native_pc_qty_including_fees, min_coin_qty, min_native_pc_qty, limit);
         dex::send_take(
             ctx,
             side.into(),
             NonZeroU64::new(limit_price).unwrap(),
             NonZeroU64::new(max_coin_qty).unwrap(),
-            NonZeroU64::new(max_native_max_native_pc_qty_including_fees).unwrap(),
+            NonZeroU64::new(max_native_pc_qty_including_fees).unwrap(),
             min_coin_qty,
             min_native_pc_qty,
             limit,
@@ -299,10 +348,15 @@ impl<'info> OrderbookClient<'info> {
     }
 }
 
-#[derive(AnchorSerialize, AnchorDeserialize)]
+#[derive(AnchorSerialize, AnchorDeserialize, Debug)]
 pub enum Side {
     Bid,
     Ask,
+}
+
+// Returns the amount of lots for the base currency of a trade with `size`.
+fn coin_lots(market: &MarketState, size: u64) -> u64 {
+    size.checked_div(market.coin_lot_size).unwrap()
 }
 
 impl From<Side> for serum_dex::matching::Side {
@@ -334,10 +388,32 @@ fn _is_valid_swap<'info>(from: &AccountInfo<'info>, to: &AccountInfo<'info>) -> 
     Ok(())
 }
 
+fn apply_safety_checks(
+    amount_in_max: u64,
+    amount_out_min: u64,
+    from_amount: u64,
+    to_amount: u64,
+) -> Result<()> {
+    if amount_in_max < from_amount {
+        return Err(ErrorCode::SwapTokenAmountExceedsMax.into());
+    }
+    if amount_out_min > to_amount {
+        return Err(ErrorCode::SwapTokenAmountLessThanMin.into());
+    }
+    if to_amount == 0 {
+        return Err(ErrorCode::ZeroSwap.into());
+    }
+    Ok(())
+}
+
 #[error_code]
 pub enum ErrorCode {
     #[msg("The tokens being swapped must have different mints")]
     SwapTokensCannotMatch,
-    #[msg("The implied limit price is invalid")]
-    InvalidLimitPrice,
+    #[msg("The token input is greater than the max amount input")]
+    SwapTokenAmountExceedsMax,
+    #[msg("The token output is less than the min amount output")]
+    SwapTokenAmountLessThanMin,
+    #[msg["No token is received from the swap"]]
+    ZeroSwap,
 }

@@ -2,15 +2,16 @@ use anchor_lang::solana_program::account_info::AccountInfo;
 use anchor_lang::solana_program::program_error::ProgramError;
 use anchor_lang::{context::CpiContext, Accounts, Result, ToAccountInfos};
 use serum_dex::matching::Side;
+use solana_program::entrypoint::ProgramResult;
 use std::num::NonZeroU64;
 
 pub use serum_dex;
 
 #[cfg(not(feature = "devnet"))]
-anchor_lang::solana_program::declare_id!("9xQeWvG816bUx9EPjHmaT23yvVM2ZWbrrpZb9PusVFin");
+anchor_lang::solana_program::declare_id!("9cnJvRQY38Bu7dWUUCncZ53evxZ4mR4S9vYV8BpToh26");
 
 #[cfg(feature = "devnet")]
-anchor_lang::solana_program::declare_id!("DESVgJVGajEgKGXhb6XmqDHGz3VjdgP7rEVESBgxmroY");
+anchor_lang::solana_program::declare_id!("9cnJvRQY38Bu7dWUUCncZ53evxZ4mR4S9vYV8BpToh26");
 
 #[allow(clippy::too_many_arguments)]
 pub fn send_take<'info>(
@@ -22,7 +23,7 @@ pub fn send_take<'info>(
     min_coin_qty: u64,
     min_native_pc_qty: u64,
     limit: u16,
-) -> Result<()> {
+) -> ProgramResult {
     let referral = ctx.remaining_accounts.get(0);
     let ix = serum_dex::instruction::send_take(
         ctx.accounts.market.key,
