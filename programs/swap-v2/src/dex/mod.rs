@@ -10,11 +10,11 @@ use std::num::NonZeroU64;
 
 pub use serum_dex;
 
-#[cfg(not(feature = "mainnet"))]
-anchor_lang::solana_program::declare_id!("B5ytTSxaVr9g4VSrnm6mWjMM4PHucFVvq1CforZiGCm7");
-
 #[cfg(feature = "mainnet")]
 anchor_lang::solana_program::declare_id!("9xQeWvG816bUx9EPjHmaT23yvVM2ZWbrrpZb9PusVFin");
+
+#[cfg(not(feature = "mainnet"))]
+anchor_lang::solana_program::declare_id!("B5ytTSxaVr9g4VSrnm6mWjMM4PHucFVvq1CforZiGCm7");
 
 #[allow(clippy::too_many_arguments)]
 pub fn send_take<'info>(
