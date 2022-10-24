@@ -63,20 +63,27 @@ This program requires building the Serum DEX from source, which is done using gi
 
 Pull the source
 
-```
+```bash
 git submodule init
 git submodule update
 ```
 
 ### Build the DEX
 
-```
+```bash
 cd deps/serum-dex/dex/ && cargo build-bpf && cd ../../../
 ```
 
 ### Build
 
 [Anchor](https://github.com/coral-xyz/anchor) is used for developoment, and it's recommended workflow is used here. To get started, see the [guide](https://book.anchor-lang.com/).
+
+
+```bash
+anchor build
+```
+
+or
 
 ```bash
 anchor build --verifiable
@@ -88,18 +95,18 @@ The `--verifiable` flag should be used before deploying so that your build artif
 
 To run the test you have to first spin up a loaclnet.
 
-```
+```bash
 solana-test-validator --reset
 ```
 
 Deploy the built DEX program
 
-```
+```bash
 cd deps/serum-dex/dex/ && solana program deploy ./target/deploy/serum_dex.so -u http://localhost:8899
 ```
 
 Run the tests in `tests`.
 
-```
+```bash
 anchor test --skip-local-validator
 ```
