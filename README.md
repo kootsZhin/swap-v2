@@ -70,8 +70,6 @@ git submodule update
 
 ### Build the DEX
 
-Build it
-
 ```
 cd deps/serum-dex/dex/ && cargo build-bpf && cd ../../../
 ```
