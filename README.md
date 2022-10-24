@@ -101,5 +101,5 @@ cd deps/serum-dex/dex/ && solana program deploy ./target/deploy/serum_dex.so -u 
 Run the tests in `tests`.
 
 ```
-anchor test --skip-local-validator -- --features localnet
+anchor test --skip-local-validator
 ```
