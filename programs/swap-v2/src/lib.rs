@@ -7,7 +7,7 @@ use anchor_spl::token;
 use serum_dex::state::MarketState;
 use solana_program::entrypoint::ProgramResult;
 
-declare_id!("67xM9uiXp22dNRbhDy9t8bbaEP8hyP4VVdctXkk9Lx2Y");
+declare_id!("CEhCJXXujkPiNGhfdFZWBJxWVApxqmhxgjsEC1StoKCV");
 
 pub mod dex;
 
@@ -16,7 +16,9 @@ pub mod swap_v2 {
 
     use super::*;
 
-    /// Convenience API to call the SendTake function on the Serum DEX.
+    /// Function: `swap`
+
+    /// A convenience API to call the SendTake function on the Serum DEX.
     ///
     /// SendTake does not require an open orders account or settlement of funds for the user -
     /// rather it immediately settles the deposites funds into the user's account if there is a counterparty in the orderbook.
@@ -26,10 +28,10 @@ pub mod swap_v2 {
     ///
     /// When side is "bid", then swaps B for A. When side is "ask", then swaps A for B.
     ///
-    /// When side is 'bid', amount -> B, amount_out_min -> A, the implied price (of A) is amount/amount_out_min.,
+    /// When side is 'bid', amount -> B, amount_out_min -> A, the implied price (of A) is amount/amount_out_min,
     /// e.g. if amount = 1000, amount_out_min = 100, then the implied price is 1000/100 = 10.
     ///
-    /// Similarly, when side is 'ask', amount -> A, amount_out_min -> B, the implied price (of A) is amount_out_min/amount,
+    /// Similarly, when side is 'ask', amount -> A, amount_out_min -> B, the implied price (of A) is amount_out_min/amount.
 
     /// * `side`           - The direction to swap.
     /// * `amount_in_max`  - The max input  amount to swap "from".
@@ -43,6 +45,13 @@ pub mod swap_v2 {
         amount_out_min: u64,
     ) -> Result<()> {
         msg!("Serum Swap Instruction: Swap");
+        msg!(
+            "Inputs: side: {:?}, amount_in_max: {}, amount_out_min: {}",
+            side,
+            amount_in_max,
+            amount_out_min
+        );
+
         // Optional referral account (earns a referral fee).
         let srm_msrm_discount = ctx.remaining_accounts.iter().next().map(Clone::clone);
         let orderbook: OrderbookClient<'info> = (&*ctx.accounts).into();
@@ -57,6 +66,7 @@ pub mod swap_v2 {
         let from_amount_before = token::accessor::amount(from_token)?;
         let to_amount_before = token::accessor::amount(to_token)?;
 
+        // Execute the swap.
         match side {
             Side::Bid => orderbook.bid(amount_in_max, amount_out_min, srm_msrm_discount)?,
             Side::Ask => orderbook.ask(amount_in_max, amount_out_min, srm_msrm_discount)?,
@@ -70,10 +80,13 @@ pub mod swap_v2 {
         let from_amount = from_amount_before.checked_sub(from_amount_after).unwrap();
         let to_amount = to_amount_after.checked_sub(to_amount_before).unwrap();
 
+        // Safety checks.
         apply_safety_checks(amount_in_max, amount_out_min, from_amount, to_amount)?;
 
         Ok(())
     }
+
+    /// Function: `swap_transitive`
 
     /// Swap two base currencies across two different markets.
     ///
@@ -93,6 +106,13 @@ pub mod swap_v2 {
         amount_out_min: u64,
     ) -> Result<()> {
         msg!("Serum Swap Instruction: Swap Transitive");
+        msg!(
+            "Inputs: amount_in_max: {}, amount_out_min: {}",
+            amount_in_max,
+            amount_out_min
+        );
+
+        // Optional referral account (earns a referral fee).
         let srm_msrm_discount = ctx.remaining_accounts.iter().next().map(Clone::clone);
 
         // Leg 1 : A -> USD(x)
@@ -127,9 +147,11 @@ pub mod swap_v2 {
             )
         };
 
+        // USD(x) spills due to rounding errors of the lot size.
         let spill_amount = sell_proceeds.checked_sub(buy_proceeds).unwrap();
         msg!("Intermediate token spill amount: {:?}", spill_amount);
 
+        // Safety checks.
         apply_safety_checks(amount_in_max, amount_out_min, from_amount, to_amount)?;
 
         Ok(())
@@ -241,10 +263,15 @@ pub struct MarketAccounts<'info> {
 // Client for sending orders to the Serum DEX.
 #[derive(Clone)]
 struct OrderbookClient<'info> {
+    // The DEX market
     market: MarketAccounts<'info>,
+    // The swap user
     wallet_owner: AccountInfo<'info>,
+    // The user's token account for the 'price' currency
     pc_wallet: AccountInfo<'info>,
+    // The Serum DEX program
     dex_program: AccountInfo<'info>,
+    // The token program
     token_program: AccountInfo<'info>,
 }
 
@@ -301,7 +328,7 @@ impl<'info> OrderbookClient<'info> {
         )
     }
 
-    /// Execute SendTake on the Serum DEX via CPI.
+    /// Execute SendTake on the Serum DEX via CPI
     fn send_take_cpi(
         &self,
         side: Side,
@@ -334,7 +361,7 @@ impl<'info> OrderbookClient<'info> {
         if let Some(srm_msrm_discount) = srm_msrm_discount {
             ctx = ctx.with_remaining_accounts(vec![srm_msrm_discount]);
         }
-        msg!("Sending take CPI: side: {:?}, limit_price: {}, max_coin_qty: {}, max_native_pc_qty_including_fees: {}, min_coin_qty: {}, min_native_pc_qty: {}, limit: {}", side, limit_price, max_coin_qty, max_native_pc_qty_including_fees, min_coin_qty, min_native_pc_qty, limit);
+        msg!("SendTake CPI: side: {:?}, limit_price: {}, max_coin_qty: {}, max_native_pc_qty_including_fees: {}, min_coin_qty: {}, min_native_pc_qty: {}, limit: {}", side, limit_price, max_coin_qty, max_native_pc_qty_including_fees, min_coin_qty, min_native_pc_qty, limit);
         dex::send_take(
             ctx,
             side.into(),
@@ -369,7 +396,6 @@ impl From<Side> for serum_dex::matching::Side {
 }
 
 // Access control modifiers.
-
 fn is_valid_swap(ctx: &Context<Swap>) -> Result<()> {
     _is_valid_swap(&ctx.accounts.market.coin_wallet, &ctx.accounts.pc_wallet)
 }
@@ -388,6 +414,7 @@ fn _is_valid_swap<'info>(from: &AccountInfo<'info>, to: &AccountInfo<'info>) -> 
     Ok(())
 }
 
+// Safety checks.
 fn apply_safety_checks(
     amount_in_max: u64,
     amount_out_min: u64,

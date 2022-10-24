@@ -7,7 +7,7 @@ import { assert } from "chai";
 import { SwapV2 } from "../target/types/swap_v2";
 import { setupOrderbook, Side } from "./utils";
 
-const DEX_ADDRESS = '9cnJvRQY38Bu7dWUUCncZ53evxZ4mR4S9vYV8BpToh26';
+const DEX_ADDRESS = 'B5ytTSxaVr9g4VSrnm6mWjMM4PHucFVvq1CforZiGCm7';
 
 const BTC_PRICE = 19000;
 const ETH_PRICE = 1300;

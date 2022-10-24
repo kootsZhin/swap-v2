@@ -1,17 +1,20 @@
+// Modules for interacting with the Serum DEX
+// For more DEX instructions, checkout anchor-spl: https://github.com/coral-xyz/anchor/blob/master/spl/src/dex.rs
+
 use anchor_lang::solana_program::account_info::AccountInfo;
 use anchor_lang::solana_program::program_error::ProgramError;
-use anchor_lang::{context::CpiContext, Accounts, Result, ToAccountInfos};
+use anchor_lang::{context::CpiContext, Accounts, ToAccountInfos};
 use serum_dex::matching::Side;
 use solana_program::entrypoint::ProgramResult;
 use std::num::NonZeroU64;
 
 pub use serum_dex;
 
-#[cfg(not(feature = "devnet"))]
-anchor_lang::solana_program::declare_id!("9cnJvRQY38Bu7dWUUCncZ53evxZ4mR4S9vYV8BpToh26");
+#[cfg(not(feature = "mainnet"))]
+anchor_lang::solana_program::declare_id!("B5ytTSxaVr9g4VSrnm6mWjMM4PHucFVvq1CforZiGCm7");
 
-#[cfg(feature = "devnet")]
-anchor_lang::solana_program::declare_id!("9cnJvRQY38Bu7dWUUCncZ53evxZ4mR4S9vYV8BpToh26");
+#[cfg(feature = "mainnet")]
+anchor_lang::solana_program::declare_id!("9xQeWvG816bUx9EPjHmaT23yvVM2ZWbrrpZb9PusVFin");
 
 #[allow(clippy::too_many_arguments)]
 pub fn send_take<'info>(
